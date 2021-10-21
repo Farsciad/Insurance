@@ -1,0 +1,837 @@
+#Libraries
+library(tidyverse) 
+library(mgcv) 
+library(ggplot2) 
+library(randomForest) 
+library(dplyr)
+
+#Selecting the color
+KULbg = "#116E8A"  
+
+#Making all the column names to small letters
+names(Assignment)=tolower(colnames(Assignment))
+names(inspost)=tolower(colnames(inspost)) 
+
+#Turning variable to factors
+Assignment$agecar=as.factor(Assignment$agecar)         
+Assignment$sexp=as.factor(Assignment$sexp) 
+Assignment$fuelc=as.factor(Assignment$fuelc) 
+Assignment$split=as.factor(Assignment$split) 
+Assignment$usec=as.factor(Assignment$usec) 
+Assignment$fleetc=as.factor(Assignment$fleetc) 
+Assignment$sportc=as.factor(Assignment$sportc) 
+Assignment$coverp=as.factor(Assignment$coverp) 
+Assignment$powerc=as.factor(Assignment$powerc) 
+str(Assignment) 
+
+#Adding average severity for severity models 
+Assignment$average=ifelse(Assignment$chargtot/Assignment$nbrtotc=="NaN",0,Assignment$chargtot/Assignment$nbrtotc) 
+Assignment$avgclaim=Assignment$nbrtotc/Assignment$duree 
+
+#Joining lang and lat to Assignment1 data set
+Assignment1=Assignment %>% inner_join(inspost, by = "codposs") 
+
+#Removing commune and ins from Assignment1 
+Assignment1=Assignment1[,-c(20,19)]
+
+
+#removing outlier observations
+#Finding an outlier if it exists, and removing it. Creating a new data set Assignment2
+Assignment2=Assignment1[-which(Assignment1$chargtot>100000),] 
+which(Assignment1$chargtot>100000)
+
+Assignment3=Assignment2[-which(Assignment2$chargtot==0),] 
+
+#1#Start of Exploration
+#######################
+
+
+#1.1#average claim frequency
+Assignment1 %>% 
+  summarize(emp_freq = sum(nbrtotc) / sum(duree))  
+## Variance of frequency S20, 1203
+m <- sum(Assignment1$nbrtotc)/sum(Assignment1$duree)
+m
+
+var <- sum((Assignment1$nbrtotc - m * Assignment1$duree)^2)/
+  sum(Assignment1$duree)
+var
+
+
+##frequency based on gender
+Assignment1 %>% 
+  group_by(sexp) %>% 
+  summarize(emp_freq = sum(nbrtotc) / sum(duree))
+
+##total claims frequency
+ggplot(Assignment1, aes(nbrtotc)) + geom_bar(col = KULbg, fill = KULbg) + 
+  labs(y = "frequency") + 
+  ggtitle("Number of claims") 
+
+
+##Frequency of total claims weighted with exposure
+g   <- ggplot(Assignment1, aes(nbrtotc)) + theme_bw() + 
+  geom_bar(aes(weight = duree), col = KULbg, 
+           fill = KULbg) + 
+  labs(y = "Abs freq (in exposure)") +
+  ggtitle("Number of claims [in exposure]")
+
+g
+
+##Relative freq Slide27
+g  <-  ggplot(Assignment1, aes(nbrtotc)) + theme_bw()
+
+g + geom_bar(aes(y = (..count..)/sum(..count..)), 
+             col = KULbg, fill = KULbg) + 
+  labs(y = "Relative frequency") +
+  ggtitle("Relative number of claims")
+
+##total claims severity
+ggplot(Assignment3, aes(chargtot))+theme_bw() + geom_histogram(bins = 250, col = KULbg, fill = KULbg) + 
+  labs(y = "number") + 
+  ggtitle("Severity of claims")
+
+#1.2#Severity
+#################################
+
+##Avergae Seeverity
+Assignment1 %>% 
+  summarize(emp_severity = sum(chargtot) / sum(nbrtotc))
+Assignment2 %>% 
+  summarize(emp_severity = sum(chargtot) / sum(nbrtotc))
+
+
+#Big severity and young drivers
+ggplot(Assignment2, aes(x=ageph, y=chargtot)) +
+  geom_point(alpha=.4, size=1, color=KULbg) 
+
+#1.3###############################
+#Other exploration exploration
+
+#Frequency of coverp
+ggplot(Assignment1, aes(coverp)) + theme_bw() +         
+  geom_bar(col = KULbg, fill = KULbg) + 
+  labs(y = "Number of each") + 
+  ggtitle("Type of coverage taken") 
+
+
+##Visualize the distribution of the  ageph  with a histogram.
+ggplot(data = Assignment1, aes(ageph)) + theme_bw() + 
+  geom_histogram(binwidth = 2, col = KULbg, 
+                 fill = KULbg, 
+                 alpha = .5) +
+  labs(y = "Absolute frequency") +
+  ggtitle("Age policyholder")
+
+
+##total exposure, and the corresponding total number of claims reported?
+Assignment1 %>% 
+  group_by(ageph) %>% 
+  summarize(tot_claims = sum(nbrtotc), 
+            tot_expo = sum(duree), tot_obs = n())
+
+
+##empirical claim frequency,
+freq_by_age  <-  Assignment1 %>% 
+  group_by(ageph) %>% 
+  summarize(emp_freq = sum(nbrtotc) / sum(duree))
+
+ggplot(freq_by_age, aes(x = ageph, y = emp_freq)) + 
+  theme_bw() +
+  geom_bar(stat = "identity", color = KULbg, 
+           fill = KULbg, alpha = .5) +
+  ggtitle("Empirical claim frequency per age policyholder")
+
+##
+ggplot(Assignment1, aes(duree)) + theme_bw()+
+  geom_histogram(col = "white", fill = KULbg, bins = 11) + 
+  labs(y = "Abs frequency") + 
+  ggtitle("Exposure")
+
+
+B.	GLM and GAM
+
+#Libraries
+library(tidyverse) 
+library(mgcv) 
+library(ggplot2) 
+library(randomForest) 
+library(dplyr)
+library(gbm)
+library(reshape2)
+library(devtools)
+library(pdp)
+library(Metrics)
+
+################################################
+############## GETTING THE DATA ################
+################################################
+
+Assignment <- read_csv(".../Assignment.csv")
+inspost <- read_excel(".../inspost.xls")
+
+#Selecting the color
+KULbg = "#116E8A"  
+names(Assignment)=tolower(colnames(Assignment))
+names(inspost)=tolower(colnames(inspost)) 
+
+
+#Create both training data and test data 80% and 20%
+set.seed(123) 
+sample <- sample.int(n = nrow(Assignment2), size = floor(.8*nrow(Assignment2)), replace = F)                      
+train_data <- Assignment2[sample, ] 
+test_data  <- Assignment2[-sample, ] 
+
+
+###############################################################################################
+
+################ Make "gender age category" variable and analysis
+
+Assignment1 %>% group_by(sexp) %>% summarise(n = n())
+
+Assignment1 <- Assignment1 %>% mutate(
+  
+  gender_age_category = case_when(
+    ((sexp=='Male') & (ageph <= 24)) ~ "<24 M",
+    ((sexp=='Male') &(ageph >= 25) & (ageph <= 30))  ~ "25-30 M",
+    ((sexp=='Male') &(ageph >= 31) & (ageph <= 60))  ~ "31-60 M",
+    ((sexp=='Male') &  (ageph > 60 ))~ ">60 M",
+    
+    ((sexp=='Female') & (ageph <= 24)) ~ "<24 F",
+    ((sexp=='Female') &(ageph >= 25) & (ageph <= 30))  ~ "25-30 F",
+    ((sexp=='Female') &(ageph >= 31) & (ageph <= 60))  ~ "31-60 F",
+    ((sexp=='Female') &  (ageph > 60 ))~ ">60 F"
+    
+    
+  ))
+
+Assignment1 %>% group_by(gender_age_category) %>% summarise(n = n())
+
+Assignment1$gender_age_category=factor(Assignment1$gender_age_category, levels = c('<24 F','25-30 F', '31-60 F', '>60 F', '<24 M','25-30 M', '31-60 M', '>60 M'
+)) 
+
+gender_age_category_overv <- Assignment1 %>% 
+  group_by(gender_age_category) %>% 
+  summarize(tot_claims = sum(nbrtotc), 
+            tot_expo = sum(duree),
+            tot_annual_claim_frequency = sum(annual_claim_frequency),
+            tot_obs = n()) %>%
+  arrange(desc(tot_annual_claim_frequency))
+
+
+gender_age_category_overv <- gender_age_category_overv %>% 
+  mutate(total_annual_claim_frequency_perc = tot_annual_claim_frequency / tot_obs)
+
+ggplot(gender_age_category_overv, aes(x=gender_age_category, y=total_annual_claim_frequency_perc)) + 
+  geom_bar(stat = "identity") +
+  xlab("gender age category") + 
+  ylab("annual claim frequency %") +
+  labs(title = "annual claim frequency % by gender age category")
+
+###############################################################################################
+
+
+# Below we see a first model with all possible explanatory variables included.
+# To take the exposure into account we use the log(duree) as an offset.
+freq_glm_full <- glm(nbrtotc ~ ageph + agecar + sexp + fuelc + split + usec + fleetc + sportc + coverp + powerc + lat + long + offset(log(duree)), fam = poisson(link = log)
+                     , data = train_data)
+
+summary(freq_glm_full)
+
+# We see that ageph, splitc, agecar, coverp are very important (large drop in deviance)
+anova(freq_glm_full)
+
+# AIC 
+AIC(freq_glm_full)
+
+# BIC 
+BIC(freq_glm_full)
+
+predict_freq_glm_full <- predict(freq_glm_full, test_data, type = 'response')
+
+predicted = predict_freq_glm_full
+observed = test_data$nbrtotc
+
+# This very simple model has a mean absolute error of 0.2163675
+mae(observed, predicted)
+
+# How to select explanatory variables in the model? Do a ‘drop–in–deviance’ analysis!
+# Use drop in deviance to see which variables to include in our model
+# Different strategies are possible: We will use the following:
+# start from a simple model with an intercept term, then include one additional explanatory
+# variable in each successive model
+
+# check
+
+train_data %>% group_by(duree) %>% summarise(n = n()) %>% arrange(desc(duree))
+
+####### Start with a model with only an offset
+freq_glm_1 <- glm(nbrtotc ~ offset(log(duree)), fam = poisson(link = log)
+                  , data = train_data) 
+
+# AIC and BIC of our base model
+
+AIC(freq_glm_1) # 
+BIC(freq_glm_1) #
+
+####### Add ageph
+freq_glm_2 <- glm(nbrtotc ~ ageph + offset(log(duree)), fam = poisson(link = log)
+                  , data = train_data) 
+
+# We see that the drop in deviance is not statistically significant, so we can reject the H0 that the
+# coefficient of ageph = 0  --> we can keep ageph in the model
+anova(freq_glm_1, freq_glm_2, test = "Chisq")
+
+####### Add split
+freq_glm_3 <- glm(nbrtotc ~ ageph + split + offset(log(duree)), fam = poisson(link = log)
+                  , data = train_data) 
+
+
+anova(freq_glm_2, freq_glm_3, test = "Chisq")
+
+######## add fuelc 
+
+freq_glm_4 <- glm(nbrtotc ~ ageph + split + fuelc + offset(log(duree)), fam = poisson(link = log)
+                  , data = train_data) 
+
+
+anova(freq_glm_3, freq_glm_4, test = "Chisq")
+
+######## add agecar
+
+freq_glm_5 <- glm(nbrtotc ~ ageph + split + fuelc + agecar + offset(log(duree)), fam = poisson(link = log)
+                  , data = train_data) 
+
+
+anova(freq_glm_4, freq_glm_5,  test = "Chisq")
+
+######## add coverp
+
+freq_glm_6 <- glm(nbrtotc ~ ageph + split + fuelc + agecar + coverp + offset(log(duree)), fam = poisson(link = log)
+                  , data = train_data) 
+
+anova( freq_glm_5, freq_glm_6,  test = "Chisq")
+
+######## add powerc
+
+freq_glm_7 <- glm(nbrtotc ~ ageph + split + fuelc + agecar + coverp + powerc + offset(log(duree)), fam = poisson(link = log)
+                  , data = train_data) 
+
+anova( freq_glm_6, freq_glm_7, test = "Chisq")
+
+######## add lat
+
+freq_glm_8 <- glm(nbrtotc ~ ageph + split + fuelc + agecar + coverp + powerc + lat
+                  + offset(log(duree)), fam = poisson(link = log)
+                  , data = train_data) 
+
+anova(  freq_glm_7, freq_glm_8, test = "Chisq")
+
+######## add sportc
+
+freq_glm_9 <- glm(nbrtotc ~ ageph + split + fuelc + agecar + coverp + powerc + lat + sportc
+                  + offset(log(duree)), fam = poisson(link = log)
+                  , data = train_data) 
+
+anova(  freq_glm_8, freq_glm_9, test = "Chisq")
+
+# We see that the drop in deviance is statistically significant, so we cannot reject the H0 that the
+# coefficient of sportc = 0  --> we can keep sportc in the model
+
+######## add fleetc
+
+freq_glm_10 <- glm(nbrtotc ~ ageph + split + fuelc + agecar + coverp + powerc + lat + fleetc
+                   + offset(log(duree)), fam = poisson(link = log)
+                   , data = train_data) 
+
+anova(  freq_glm_8, freq_glm_10, test = "Chisq")
+
+######## add long
+
+freq_glm_11 <- glm(nbrtotc ~ ageph + split + fuelc + agecar + coverp + powerc + lat + long
+                   + offset(log(duree)), fam = poisson(link = log)
+                   , data = train_data) 
+
+anova(  freq_glm_8, freq_glm_11, test = "Chisq")
+
+######## add sexp
+
+freq_glm_12 <- glm(nbrtotc ~ ageph + split + fuelc + agecar + coverp + powerc + lat + sexp
+                   + offset(log(duree)), fam = poisson(link = log)
+                   , data = train_data) 
+
+anova(  freq_glm_8, freq_glm_12, test = "Chisq")
+
+######## add usec
+
+freq_glm_13 <- glm(nbrtotc ~ ageph + split + fuelc + agecar + coverp + powerc + lat + usec
+                   + offset(log(duree)), fam = poisson(link = log)
+                   , data = train_data) 
+
+
+anova(  freq_glm_8, freq_glm_13, test = "Chisq")
+
+# Add an interaction effect of age and gender
+freq_glm_14 <- glm(nbrtotc ~ ageph + split + fuelc + agecar + coverp + powerc + lat + ageph:sexp
+                   + offset(log(duree)), fam = poisson(link = log)
+                   , data = train_data) 
+
+anova(  freq_glm_8, freq_glm_14, test = "Chisq")
+
+# AIC and BIC of our final model
+
+AIC(freq_glm_14)
+BIC(freq_glm_14)
+
+summary(freq_glm_14)
+
+##### Check the performance of our model on the test data with "mean absolute error"
+
+predict_freq_glm <- predict(freq_glm_14, test_data, type = 'response')
+
+predict_freq_glm
+
+predicted = predict_freq_glm
+observed = test_data$nbrtotc
+
+mae(observed, predicted)
+
+# Check mean predicted claim frequency of our final model
+mean(predict_freq_glm)
+
+##############################
+
+# Check final model freq_glm_14 for a certain profile
+
+summary(predict_freq_glm)
+
+summary(freq_glm_14)
+
+mean(test_data$lat)
+
+example_driver <- data.frame(
+  ageph = 28,
+  split = 'Once',
+  fuelc = 'Petrol',
+  agecar = '0-1',
+  coverp = 'MTPL+',
+  powerc = '>110',
+  lat = 50,
+  duree = 1,
+  sexp = "Male"
+)
+
+head(example_driver)
+
+predict(freq_glm_14, newdata = example_driver, 
+        type = "response")
+
+
+
+################################################
+############## GLM FOR SEVERITIY ###############
+################################################
+
+# We only train on the observations which have at least 1 claim
+
+train_sev = train_data %>% 
+  filter(nbrtotc > 0) %>% 
+  select(average, nbrtotc, ageph, sexp, fuelc, split, usec,
+         fleetc, sportc, coverp, powerc, agecar ,  long, lat)
+
+# Below we see a first model with all possible explanatory variables included.
+
+SEV_glm_full <- glm(average ~ ageph + agecar + sexp + fuelc + split + usec + fleetc 
+                    + sportc + coverp + powerc + lat + long, data =  train_sev, family = Gamma (link="log")) 
+
+summary(SEV_glm_full)
+
+AIC(SEV_glm_full)
+BIC(SEV_glm_full)
+
+# We see that agecar and coverp are very important (large drop in deviance)
+# ageoph is close
+# split, powerc and  sportc will need to be further investigated.
+# anova(SEV_glm_full)
+anova(SEV_glm_full, test = "F")
+
+
+# Start with a model with only an offset
+
+SEV_glm_1 <- glm(average ~ 1 , data =  train_sev, family = Gamma (link="log")) 
+
+AIC(SEV_glm_1)
+
+# Add agecar
+
+SEV_glm_2 <- glm(average ~ agecar , data =  train_sev, family = Gamma (link="log")) 
+
+AIC(SEV_glm_2)
+
+anova(SEV_glm_1, SEV_glm_2, test = "F")
+anova(SEV_glm_2, test = "F")
+
+# Add coverp
+
+SEV_glm_3 <- glm(average ~ agecar + coverp , data =  train_sev, family = Gamma (link="log")) 
+
+AIC(SEV_glm_3)
+
+anova(SEV_glm_2, SEV_glm_3, test = "F")
+
+# Add ageph
+
+SEV_glm_4 <- glm(average ~ agecar + coverp + ageph, data =  train_sev, family = Gamma (link="log")) 
+
+AIC(SEV_glm_4)
+
+anova(SEV_glm_3, SEV_glm_4, test = "F")
+
+
+# AIC and BIC of our final model
+
+AIC(SEV_glm_3)
+BIC(SEV_glm_3)
+
+# Overview of our final model
+
+summary(SEV_glm_3)
+
+
+###########################  Added mean absolute error
+
+predict_SEV_glm <- predict(SEV_glm_3, test_data, type = 'response')
+
+predicted = predict_SEV_glm
+observed = test_data$average
+
+# 1304.089
+mae(observed, predicted)
+
+# Check mean predicted severity of our final model
+mean(predict_SEV_glm)
+
+# Check predicted severity of our final model for a certain profile
+
+example_driver <- data.frame(
+  ageph = 28,
+  split = 'Once',
+  fuelc = 'Petrol',
+  agecar = '0-1',
+  coverp = 'MTPL+',
+  powerc = '>110',
+  lat = 50,
+  duree = 1,
+  sexp = "Male"
+)
+
+head(example_driver)
+
+predict(SEV_glm_3, newdata = example_driver, 
+        type = "response")
+
+###################################################
+############### GAM frequency model ###############
+###################################################
+
+# As GLM's are not well suited for continuous risk factors that relate to the response in a non-linear way
+# we
+
+# The predictor allows for smooth effects of continuous risk factors and spatial covariates, next to the linear terms
+
+# Advantage GAM include non-linear and spacial effect : 
+
+# We build a 2-dimensional smoother with the longitude and latitude
+# Lat removed and added to the smoother
+
+freq_gam_1 = gam(nbrtotc~ageph + split + fuelc + agecar + coverp + powerc + ageph:sexp, 
+                 offset=log(duree), method= "REML", family=poisson, train_data) 
+
+freq_gam_2 = gam(nbrtotc~ageph + split + fuelc + agecar + coverp + powerc + ageph:sexp
+                 +s(long,lat,bs="tp"), 
+                 offset=log(duree), method= "REML", family=poisson, train_data) 
+
+anova(  freq_gam_1, freq_gam_2, test = "Chisq")
+
+freq_gam = freq_gam_2
+
+summary(freq_gam) 
+
+# AIC (100542) and BIC (100 925) of our final model
+
+AIC(freq_gam)
+BIC(freq_gam)
+
+###########################  Added mean absolute error
+
+predict_freq_gam <- predict(freq_gam, test_data, type = 'response')
+
+predicted = predict_freq_gam
+observed = test_data$nbrtotc
+
+# 0.2312195
+mae(observed, predicted)
+
+###################################################
+############### GAM severity  model ###############
+###################################################
+
+sev_gam_1 = gam(average~agecar+coverp,  
+                method= "REML", family=Gamma, train_sev) 
+
+sev_gam_2 = gam(average~s(long,lat,bs="tp")+agecar+coverp,  
+                method= "REML", family=Gamma, train_sev) 
+
+anova(  sev_gam_1, sev_gam_2, test = "F")
+
+summary(sev_gam_2) 
+
+AIC(sev_gam_2)
+BIC(sev_gam_2)
+
+sev_gam = sev_gam_2 
+
+###########################  Added mean absolute error
+
+predict_sev_gam <- predict(sev_gam, test_data, type = 'response')
+
+predicted = predict_sev_gam
+observed = test_data$average
+
+# 1327.362
+mae(observed, predicted)
+
+C.	GBM
+
+################################################
+############## GBM FOR FREQUENCY ###############
+################################################
+
+features_freq = train %>% dplyr::select(agecar, duree, nbrtotc, ageph, sexp, fuelc, split, usec, fleetc, 
+                                  sportc, coverp, powerc, long, lat) 
+
+gbmmodel_freq = gbm(nbrtotc ~ offset(log(duree)) + agecar + ageph + sexp + fuelc + split + usec +
+                     fleetc + sportc + coverp + powerc + long + lat,
+                   distribution = "poisson",
+                   n.minobsinnode = 0.01 * 0.75 * nrow(features_freq), cv.folds = 3,
+                   n.trees = 10000, data = features_freq, interaction.depth = 2, shrinkage = 0.01,
+                   bag.fraction = 0.5, train.fraction = 1)
+
+#########################################################################
+############## FINDING THE OPTIMAL NUMBER OF TREES - FREQ ################
+#########################################################################
+
+# APPROACH 1 -> out-of-bag error estimate
+best.iter.oob.freq <- gbm.perf(gbmmodel_freq, method = "OOB", oobag.curve = TRUE, overlay = TRUE)
+print(best.iter.oob.freq)
+# This seems to underestimate the opptimal number of trees
+
+# APPROACH 2 -> cross-validation 
+best.iter.cv.freq <- gbm.perf(gbmmodel_freq, method = "cv") 
+print(best.iter.cv.freq)
+
+# Variable importance using the optimal number of trees
+summary(gbmmodel_freq_test, n.trees = best.iter.cv.freq) 
+
+################################################
+############## PDP FOR FREQUENCY ###############
+################################################
+
+plot(gbmmodel_freq, 1, best.iter.cv.freq, type = "response")
+plot(gbmmodel_freq, 2, best.iter.cv.freq, type = "response")
+plot(gbmmodel_freq, 3, best.iter.cv.freq, type = "response")
+plot(gbmmodel_freq, 4, best.iter.cv.freq, type = "response")
+plot(gbmmodel_freq, 5, best.iter.cv.freq, type = "response")
+plot(gbmmodel_freq, 6, best.iter.cv.freq, type = "response")
+plot(gbmmodel_freq, 7, best.iter.cv.freq, type = "response")
+plot(gbmmodel_freq, 8, best.iter.cv.freq, type = "response")
+plot(gbmmodel_freq, 9, best.iter.cv.freq, type = "response")
+plot(gbmmodel_freq, 10, best.iter.cv.freq, type = "response")
+plot(gbmmodel_freq, 11, best.iter.cv.freq, type = "response")
+plot(gbmmodel_freq, 12, best.iter.cv.freq, type = "response")
+
+################################################
+############## ICE FOR FREQUENCY ###############
+################################################
+
+# We make an ICE plot for the age of the policy holder
+age_ice_freq <- partial(gbmmodel_freq, n.trees = best.iter.cv.freq, pred.var = "ageph", ice = TRUE)
+plotPartial(age_ice_freq[age_ice_freq$yhat.id%in%sample(unique(age_ice_freq$yhat.id), 30),], plot.pdp = FALSE, alpha = 0.2)
+
+#######################################################
+############## PREDICTIONS - FREQ #####################
+#######################################################
+
+gbmpredict_freq <- predict(gbmmodel_freq, test, n.trees = best.iter.cv.freq, type = 'response') 
+test$lambda_hat <- gbmpredict_freq*test$duree
+
+# Make predictions for an example driver with 1 total year of exposure
+example_driver <- data.frame(
+  ageph = 28,
+  split = 'Once',
+  fuelc = 'Petrol',
+  agecar = '0-1',
+  coverp = 'MTPL+',
+  powerc = '>110',
+  duree = 1,
+  sexp = "Male",
+  usec = "Private",
+  fleetc = "No",
+  sportc = "No",
+  lat = 50.81667,
+  long = 4.416667
+)
+
+predict(gbmmodel_freq, example_driver, n.trees = best.iter.cv.freq, type = "response")
+
+#Calculate the mean absolute error
+mean(abs(test$nbrtotc-test$lambda_hat))
+
+################################################
+############## GBM FOR SEVERITY ################
+################################################
+
+features_sev = train %>% 
+  dplyr::filter(nbrtotc > 0) %>% 
+  dplyr::select(average, agecar, nbrtotc, ageph, sexp, fuelc, split, usec,
+                fleetc, sportc, coverp, powerc, long, lat)
+
+gbmmodel_sev= gbm(average ~ ageph + agecar + sexp + fuelc + split + usec + fleetc +
+                 sportc + coverp + powerc + long + lat, distribution = "gamma",
+               n.minobsinnode = 0.01 * 0.75 * nrow(features_sev), cv.folds = 3,
+               n.trees = 600 ,data = features_sev, interaction.depth = 2, shrinkage = 0.01,
+               bag.fraction = 0.75, train.fraction = 1, weights = nbrtotc,
+               verbose = FALSE)
+
+#########################################################################
+############## FINDING THE OPTIMAL NUMBER OF TREES - SEV ################
+#########################################################################
+
+# APPROACH 1 -> out-of-bag error estimate
+best.iter.oob.sev <- gbm.perf(gbmmodel_sev, method = "OOB", oobag.curve = TRUE, overlay = TRUE)
+print(best.iter.oob.sev)
+# This seems to underestimate the optimal number of trees
+
+# APPROACH 2 -> cross-validation 
+best.iter.cv.sev <- gbm.perf(gbmmodel_sev, method = "cv", oobag.curve = TRUE, overlay = TRUE) 
+print(best.iter.cv.sev)
+
+# Variable importance using the optimal number of trees
+summary(gbmmodel_sev, n.trees = best.iter.cv.sev) 
+
+################################################
+############## PDP FOR SEVERITY ################
+################################################
+
+plot(gbmmodel_sev, 1, best.iter.cv.sev, type = "response")
+plot(gbmmodel_sev, 2, best.iter.cv.sev, type = "response")
+plot(gbmmodel_sev, 3, best.iter.cv.sev, type = "response")
+plot(gbmmodel_sev, 4, best.iter.cv.sev, type = "response")
+plot(gbmmodel_sev, 5, best.iter.cv.sev, type = "response")
+plot(gbmmodel_sev, 6, best.iter.cv.sev, type = "response")
+plot(gbmmodel_sev, 7, best.iter.cv.sev, type = "response")
+plot(gbmmodel_sev, 8, best.iter.cv.sev, type = "response")
+plot(gbmmodel_sev, 9, best.iter.cv.sev, type = "response")
+plot(gbmmodel_sev, 10, best.iter.cv.sev, type = "response")
+plot(gbmmodel_sev, 11, best.iter.cv.sev, type = "response")
+plot(gbmmodel_sev, 12, best.iter.cv.sev, type = "response")
+
+################################################
+############## ICE FOR SEVERITY ################
+################################################
+
+# We make an ICE plot for the age of the policy holder
+age_ice_sev <- partial(gbmmodel_sev, n.trees = best.iter.cv.sev, pred.var = "ageph", ice = TRUE)
+plotPartial(age_ice_sev[age_ice_sev$yhat.id%in%sample(unique(age_ice_sev$yhat.id), 30),], plot.pdp = FALSE, alpha = 0.2)
+
+######################################################
+############## PREDICTIONS - SEV #####################
+######################################################
+
+gbmpredict_sev <- predict(gbmmodel_sev, test, n.trees = best.iter.cv.sev, type = "response") 
+test$pred_sev <- gbmpredict_sev
+head(test)
+
+# Make predictions for an example driver with 1 total year of exposure
+example_driver <- data.frame(
+  ageph = 28,
+  split = 'Once',
+  fuelc = 'Petrol',
+  agecar = '0-1',
+  coverp = 'MTPL+',
+  powerc = '>110',
+  duree = 1,
+  sexp = "Male",
+  usec = "Private",
+  fleetc = "No",
+  sportc = "No",
+  lat = 50.81667,
+  long = 4.416667
+)
+
+predict(gbmmodel_sev, example_driver, n.trees = best.iter.cv.sev, type = "response")
+
+#Calculate the mean absolute error
+mean(abs(test$average-test$pred_sev))
+
+D.	Risk loadings
+
+######################################################
+############## Risk loadings  ########################
+######################################################
+
+# We first have to fit the gamma distribution to the severities.
+# The gamma distribution is defined by a shape and a scale parameter.
+# We assume that the scale parameter is the same for each individual and from the 
+# gbm model, we know the expected value for each individual. The shape parameter is 
+# then the expected value divided by the scale parameter.
+# Using maximum likelihood estimation, we can find the estimator for the scale
+# parameter
+
+non_zero <- test %>% filter(average > 0)
+grid <- seq(2250, 2300, by = 0.1)
+loglik <- matrix(nrow = length(non_zero$average), ncol = length(grid))
+
+for(i in 0:length(non_zero$average)){
+  for(j in 0:length(grid)){
+    loglik[i,j] <- log(dgamma(x = non_zero$average[i], shape = non_zero$pred_sev[i]/grid[j],
+                          scale = grid[j]))
+  }
+}
+
+loglik <- apply(X = loglik, MARGIN= 2, FUN = sum)
+max_index <- which.max(loglik)
+maxLL <- loglik[max_index]
+est_scale <- grid[max_index]
+est_scale
+
+# Now we will bootstrap a series of aggregate portfolio claims by simulating from our
+# test portfolio with our known distributions.
+
+bootstrap <- matrix(nrow = 5000, ncol = length(test$average))
+for (i in 0:nrow(bootstrap)) {
+  for (j in 0:ncol(bootstrap)){
+    bootstrap[i,j] <- rgamma(n = 1, shape = test$pred_sev[j]/est_scale, scale = est_scale) *
+      rpois(n = 1, lambda = test$lambda_hat)
+  }
+}
+
+bootstrap <- apply(X = bootstrap, MARGIN = 1, FUN = sum)
+bootstrap
+hist(bootstrap, breaks = 30, main = "Result of bootstrap",
+     xlab = "Total Risk Premium")
+
+# Using our bootstrapped distribution, we can calculate the 95% quantile. In only 
+# 5% of the cases, our aggregate portfolio claim will be higher than this value.
+total_risk_premium <- quantile(bootstrap, p = 0.95)
+total_risk_premium
+total_pure_premium <- mean(bootstrap)
+total_pure_premium
+total_risk_loading <- total_risk_premium - total_pure_premium
+total_risk_loading
+
+# Now we can calculate the phi parameter
+risk_loading_factor <- (total_risk_premium - total_pure_premium)/total_pure_premium
+risk_loading_factor
+
+
